@@ -6,17 +6,17 @@ sentence.py — 用 AI 为英文单词造句，高亮目标单词
     uv run sentence.py <word>
     uv run sentence.py <word> --count 5
     uv run sentence.py <word> --model deepseek-chat --no-color
-
-依赖：
-    pip install python-dotenv requests
+    uv run sentence.py <word> --read               # 同时生成语音
 """
 
 import argparse
+import asyncio
 import os
 import re
 import sys
 
 from dotenv import load_dotenv
+import edge_tts
 import requests
 
 
@@ -74,6 +74,26 @@ def render(text: str, color: bool) -> str:
     return text.replace("**", "")
 
 
+def strip_markup(text: str) -> str:
+    """去掉 **marker** 得到纯文本。"""
+    return text.replace("**", "")
+
+
+def slug(text: str, max_len: int = 40) -> str:
+    """取文本前 max_len 字符做文件名安全片段。"""
+    safe = re.sub(r'[^\w\s-]', '', strip_markup(text)).strip().replace(' ', '_')
+    return safe[:max_len].rstrip('_')
+
+
+AUDIO_CACHE = os.path.join(os.path.dirname(__file__), 'audio_cache')
+
+
+async def save_audio(text: str, voice: str, path: str):
+    """用 edge-tts 生成语音并保存。"""
+    communicate = edge_tts.Communicate(strip_markup(text), voice)
+    await communicate.save(path)
+
+
 def main():
     load_dotenv()
     api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -88,6 +108,8 @@ def main():
                         help=f"生成句子数量（默认 {DEFAULT_COUNT}）")
     parser.add_argument("--no-color", action="store_true", help="禁用颜色高亮")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="模型名称")
+    parser.add_argument("-r", "--read", action="store_true", help="生成语音文件")
+    parser.add_argument("--voice", default="en-US-AriaNeural", help="edge-tts 语音名")
     args = parser.parse_args()
 
     try:
@@ -104,6 +126,26 @@ def main():
         if cn:
             print(f"     {render(cn, color)}")
     print()
+
+    if args.read:
+        os.makedirs(AUDIO_CACHE, exist_ok=True)
+
+        async def _gen_all():
+            for i, (en, cn) in enumerate(results, 1):
+                name = f"{i:02d}_{slug(en)}.wav"
+                path = os.path.join(AUDIO_CACHE, name)
+                if os.path.exists(path):
+                    continue
+                communicate = edge_tts.Communicate(strip_markup(en), args.voice)
+                await communicate.save(path)
+
+        print(f"  生成语音 (voice: {args.voice})...")
+        asyncio.run(_gen_all())
+
+        for i, (en, cn) in enumerate(results, 1):
+            name = f"{i:02d}_{slug(en)}.wav"
+            print(f"    {i}. {name}")
+        print(f"\n  audio_cache/")
 
 
 if __name__ == "__main__":

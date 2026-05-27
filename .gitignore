@@ -5,3 +5,5 @@ __pycache__
 ecdict.db
 
 .env
+
+audio_cache/*
