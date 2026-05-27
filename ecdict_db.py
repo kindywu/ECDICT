@@ -335,7 +335,6 @@ class ECDict:
             word_count += self._flush_batch(batch, tag_ids)
 
         self.conn.commit()
-        print(f'Done. {word_count} words imported.')
         return word_count
 
     def _flush_batch(self, batch, tag_ids):
@@ -631,3 +630,31 @@ class ECDict:
 
 
 # end of ECDict class
+
+# ---------------------------------------------------------------------------
+#  CLI入口 — 仅用于导入
+# ---------------------------------------------------------------------------
+if __name__ == '__main__':
+    import argparse
+    import sys
+    import time
+
+    parser = argparse.ArgumentParser(description='ECDICT 数据库导入工具')
+    parser.add_argument('--csv', default='ecdict.csv', help='CSV 文件路径')
+    parser.add_argument('--db', default='ecdict.db', help='SQLite 数据库路径')
+    parser.add_argument('--clear', action='store_true', help='重建前清空数据库')
+    args = parser.parse_args()
+
+    if os.path.exists(args.db) and not args.clear:
+        print(f'Database {args.db} already exists. Use --clear to rebuild.')
+        sys.exit(1)
+
+    db = ECDict(args.db)
+    if args.clear:
+        db.clear()
+
+    t0 = time.time()
+    n = db.import_csv(args.csv)
+    elapsed = time.time() - t0
+    print(f'Done. {n} words imported in {elapsed:.1f}s')
+    db.close()
