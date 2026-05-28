@@ -11,10 +11,16 @@ query.py — ECDICT 命令行查询工具
 """
 
 import argparse
+import asyncio
 import json
+import os
+import re
 import sys
 
+from dotenv import load_dotenv
+import edge_tts
 from ecdict_db import ECDict, TAG_LABELS, FORM_LABELS
+from sentence import generate_sentences, strip_markup, AUDIO_CACHE, DEFAULT_MODEL
 
 DEFAULT_DB = 'ecdict.db'
 
@@ -24,6 +30,17 @@ def cmd_lookup(db, args):
     if result is None:
         print(f'"{args.word}" not found.')
         return 1
+
+    # 自动生成例句（如缺失且启用了 --sentence）
+    if args.sentence and not result.get('sentences'):
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if api_key:
+            try:
+                _ensure_sentences(db, args.word.lower(), result['id'],
+                                  api_key, args.model, args.voice)
+            except Exception:
+                pass  # 生成失败不阻塞主流程
+            result = db.lookup(args.word.lower())
 
     if args.json:
         print(json.dumps(_clean(result), ensure_ascii=False, indent=2))
@@ -60,6 +77,18 @@ def cmd_lookup(db, args):
     details = result.get('details', {})
     if details.get('proportion'):
         print(f'POS distribution: {details["proportion"]}')
+
+    # 显示例句
+    sentences = result.get('sentences', [])
+    if sentences:
+        print('Sentences:')
+        for s in sentences:
+            en = _render_bold(s['sentence'])
+            print(f'  • {en}')
+            print(f'    {s["translation"]}')
+            if s.get('audio'):
+                print(f'    └ {s["audio"]}')
+        print()
 
 
 def cmd_form(db, args):
@@ -139,7 +168,35 @@ def _clean(obj):
     return obj
 
 
+def _render_bold(text):
+    """将 **word** 渲染为 ANSI 红色。"""
+    return re.sub(r"\*\*(.+?)\*\*", lambda m: f"\033[1;31m{m.group(1)}\033[0m", text)
+
+
+async def _gen_sentence_audio(sentences, word, voice):
+    """为每条例句生成音频，返回 (sentence, translation, audio_name) 列表。"""
+    os.makedirs(AUDIO_CACHE, exist_ok=True)
+    items = []
+    for i, (en, cn) in enumerate(sentences):
+        safe = re.sub(r'[^\w\s-]', '', strip_markup(en)).strip().replace(' ', '_')[:40].rstrip('_')
+        audio_name = f"{word}_{i+1:02d}_{safe}.wav"
+        audio_path = os.path.join(AUDIO_CACHE, audio_name)
+        if not os.path.exists(audio_path):
+            communicate = edge_tts.Communicate(strip_markup(en), voice)
+            await communicate.save(audio_path)
+        items.append((en, cn, audio_name))
+    return items
+
+
+def _ensure_sentences(db, word, word_id, api_key, model, voice, count=3):
+    """调用 DeepSeek 生成例句，生成音频，保存到数据库。"""
+    results = generate_sentences(word, count, api_key, model)
+    items = asyncio.run(_gen_sentence_audio(results, word, voice))
+    db.save_sentences(word_id, items)
+
+
 def main():
+    load_dotenv()
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument('--db', default=DEFAULT_DB, help='SQLite 数据库路径')
     parent.add_argument('--json', action='store_true', help='JSON 格式输出')
@@ -149,6 +206,14 @@ def main():
 
     p_lookup = sub.add_parser('lookup', parents=[parent], help='查单词')
     p_lookup.add_argument('word', help='要查询的单词')
+    p_lookup.add_argument('--sentence', action='store_true', default=True,
+                          help='自动生成/显示例句（默认启用）')
+    p_lookup.add_argument('--no-sentence', dest='sentence', action='store_false',
+                          help='跳过例句')
+    p_lookup.add_argument('--model', default=DEFAULT_MODEL,
+                          help=f'AI 模型（默认 {DEFAULT_MODEL}）')
+    p_lookup.add_argument('--voice', default='en-US-AriaNeural',
+                          help='TTS 语音（默认 en-US-AriaNeural）')
 
     p_form = sub.add_parser('form', parents=[parent], help='通过词形反查原型')
     p_form.add_argument('word', help='词形单词')

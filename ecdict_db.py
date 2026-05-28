@@ -92,6 +92,16 @@ CREATE TABLE IF NOT EXISTS pos_frequencies (
     frequency  INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS sentences (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    word_id      INTEGER NOT NULL REFERENCES words(id),
+    sentence     TEXT NOT NULL,
+    translation  TEXT NOT NULL,
+    audio        TEXT,
+    sort_order   INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS details (
     word_id     INTEGER PRIMARY KEY REFERENCES words(id),
     cald        TEXT,
@@ -109,6 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_word_tags_tag  ON word_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_word_forms_word ON word_forms(word_id);
 CREATE INDEX IF NOT EXISTS idx_word_forms_lookup ON word_forms(form_word);
 CREATE INDEX IF NOT EXISTS idx_pos_freq_word  ON pos_frequencies(word_id);
+CREATE INDEX IF NOT EXISTS idx_sentences_word ON sentences(word_id);
 """
 
 
@@ -250,7 +261,7 @@ class ECDict:
     def clear(self):
         """清空所有数据。"""
         tables = [
-            'details', 'pos_frequencies', 'word_forms',
+            'sentences', 'details', 'pos_frequencies', 'word_forms',
             'word_tags', 'definitions', 'words', 'tags',
         ]
         for t in tables:
@@ -541,6 +552,9 @@ class ECDict:
         ).fetchone()
         result['details'] = dict(detail) if detail else {}
 
+        # sentences
+        result['sentences'] = self.get_sentences(word_id)
+
         return result
 
     def search_by_tag(self, tag_name):
@@ -624,6 +638,29 @@ class ECDict:
                 WHERE t.name = ?
             """, (tag,)).fetchone()[0]
         return self.conn.execute('SELECT COUNT(*) FROM words').fetchone()[0]
+
+    # ------------------------------------------------------------------
+    #  例句
+    # ------------------------------------------------------------------
+    def get_sentences(self, word_id):
+        """查询单词的例句列表。"""
+        return [dict(r) for r in self.conn.execute(
+            'SELECT * FROM sentences WHERE word_id = ? ORDER BY sort_order',
+            (word_id,)
+        ).fetchall()]
+
+    def save_sentences(self, word_id, sentences):
+        """保存例句到数据库。
+
+        Args:
+            word_id: 单词 ID
+            sentences: [(sentence, translation, audio_path), ...]
+        """
+        self.conn.executemany(
+            'INSERT INTO sentences (word_id, sentence, translation, audio, sort_order) VALUES (?, ?, ?, ?, ?)',
+            [(word_id, s, t, a, i) for i, (s, t, a) in enumerate(sentences)]
+        )
+        self.conn.commit()
 
     def close(self):
         self.conn.close()
